@@ -1,21 +1,17 @@
 package com.bluemes.app.ui.nearby
 
-import android.bluetooth.BluetoothManager
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.bluemes.app.BlueMesApplication
-import com.bluemes.app.bluetooth.BluetoothDiscoveryManager
-import com.bluemes.app.bluetooth.BluetoothService
+import com.bluemes.app.bluetooth.BlueMesManager
 import com.bluemes.app.bluetooth.ConnectionEvent
 import com.bluemes.app.data.repository.ChatRepository
 import com.bluemes.app.models.NearbyUser
 import com.bluemes.app.models.PacketType
 import com.bluemes.app.utils.UserPreferences
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class NearbyViewModel(private val context: Context) : ViewModel() {
@@ -24,52 +20,47 @@ class NearbyViewModel(private val context: Context) : ViewModel() {
     private val repo = ChatRepository(db.conversationDao(), db.messageDao())
     private val prefs = UserPreferences(context)
 
-    private val _nearbyUsers = MutableStateFlow<Map<String, NearbyUser>>(emptyMap())
-    val nearbyUsers: StateFlow<Map<String, NearbyUser>> = _nearbyUsers
+    // The shared manager — same instance used by ChatViewModel
+    private val manager = BlueMesApplication.instance.bluetoothManager
 
-    private var discoveryManager: BluetoothDiscoveryManager? = null
-    var bluetoothService: BluetoothService? = null
-        private set
+    // Expose the manager's nearbyUsers directly; it is kept up-to-date
+    // by HANDSHAKE packets as well as Bluetooth discovery broadcasts
+    val nearbyUsers: StateFlow<Map<String, NearbyUser>> = manager.nearbyUsers
 
     fun startDiscoveryAndServer() {
         viewModelScope.launch {
-            val userName = prefs.userName.first() ?: "User"
-            val btManager = context.getSystemService(BluetoothManager::class.java)
-            val btAdapter = btManager?.adapter ?: return@launch
-            val localAddress = try { btAdapter.address } catch (_: SecurityException) { "unknown" }
-
-            val service = BluetoothService(btAdapter, userName, localAddress)
-            bluetoothService = service
-            service.startServer()
-
-            val discovery = BluetoothDiscoveryManager(context, btAdapter)
-            discoveryManager = discovery
-            discovery.startDiscovery()
-
-            // Observe discovered devices
-            launch {
-                discovery.nearbyUsers.collect { map ->
-                    _nearbyUsers.value = map
-                }
+            // Give the manager the local user name if not yet initialised
+            if (!manager.isReady()) {
+                manager.init(prefs)
+                manager.start(context)
+            } else {
+                // Already running — just ensure discovery is scanning
+                manager.restartDiscovery()
             }
 
-            // Handle connection events — update handshake-derived user names
+            // Persist conversations for anyone who sends a handshake
             launch {
-                service.incomingMessages.collect { packet ->
-                    if (packet.type == PacketType.HANDSHAKE || packet.type == PacketType.HANDSHAKE_ACK) {
-                        discovery.updateUserName(packet.senderAddress, packet.senderName)
-                        repo.ensureConversation(packet.senderAddress, packet.senderName)
-                    } else if (packet.type == PacketType.TEXT_MESSAGE) {
-                        repo.saveIncomingMessage(packet)
+                manager.incomingMessages.collect { packet ->
+                    when (packet.type) {
+                        PacketType.HANDSHAKE, PacketType.HANDSHAKE_ACK -> {
+                            repo.ensureConversation(packet.senderAddress, packet.senderName)
+                        }
+                        PacketType.TEXT_MESSAGE -> {
+                            repo.saveIncomingMessage(packet)
+                        }
+                        else -> {}
                     }
                 }
             }
 
-            // Connection events
+            // Log connection events (optional — UI can also observe manager.connectionEvents)
             launch {
-                service.connectionEvents.collect { event ->
+                manager.connectionEvents.collect { event ->
                     when (event) {
-                        is ConnectionEvent.Disconnected -> { /* handled by discovery receiver */ }
+                        is ConnectionEvent.Connected ->
+                            android.util.Log.d("NearbyVM", "Connected: ${event.address}")
+                        is ConnectionEvent.Disconnected ->
+                            android.util.Log.d("NearbyVM", "Disconnected: ${event.address}")
                         else -> {}
                     }
                 }
@@ -79,8 +70,8 @@ class NearbyViewModel(private val context: Context) : ViewModel() {
 
     override fun onCleared() {
         super.onCleared()
-        discoveryManager?.stopDiscovery()
-        bluetoothService?.stopAll()
+        // Do NOT stop the manager here — ChatViewModel still needs it.
+        // The manager lives as long as the Application.
     }
 }
 

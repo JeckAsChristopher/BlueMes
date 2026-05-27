@@ -7,17 +7,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
+import com.bluemes.app.models.ConnectionState
 import com.bluemes.app.models.NearbyUser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
 /**
- * Manages Bluetooth Classic discovery and maintains a live list of
- * nearby BlueMes users (those advertising our service UUID).
+ * Manages Bluetooth Classic discovery broadcasts.
  *
- * Caller must hold BLUETOOTH_SCAN + BLUETOOTH_CONNECT permissions before
- * calling startDiscovery().
+ * Note: discoverable devices appear here first with their Bluetooth *device name*
+ * as the userName placeholder. The real BlueMes username is filled in by
+ * BlueMesManager once a HANDSHAKE packet is received over the socket.
  */
 class BluetoothDiscoveryManager(
     private val context: Context,
@@ -32,22 +33,21 @@ class BluetoothDiscoveryManager(
         override fun onReceive(ctx: Context, intent: Intent) {
             when (intent.action) {
                 BluetoothDevice.ACTION_FOUND -> {
-                    val device: BluetoothDevice? =
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE).toInt()
-
-                    device?.let { handleDeviceFound(it, rssi) }
+                    val device: BluetoothDevice =
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    val rssi = intent.getShortExtra(
+                        BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE
+                    ).toInt()
+                    onDeviceFound(device, rssi)
                 }
-
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
                     Log.d(TAG, "Discovery cycle finished — restarting")
                     startDiscovery()
                 }
-
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
-                    val device: BluetoothDevice? =
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    device?.let { removeUser(it.address) }
+                    val device: BluetoothDevice =
+                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) ?: return
+                    removeUser(device.address)
                 }
             }
         }
@@ -63,10 +63,9 @@ class BluetoothDiscoveryManager(
             context.registerReceiver(receiver, filter)
             isReceiverRegistered = true
         }
-
         if (bluetoothAdapter.isDiscovering) bluetoothAdapter.cancelDiscovery()
-        val started = bluetoothAdapter.startDiscovery()
-        Log.d(TAG, "Discovery started: $started")
+        val started = try { bluetoothAdapter.startDiscovery() } catch (_: SecurityException) { false }
+        Log.d(TAG, "startDiscovery: $started")
     }
 
     fun stopDiscovery() {
@@ -74,43 +73,66 @@ class BluetoothDiscoveryManager(
             try { context.unregisterReceiver(receiver) } catch (_: Exception) {}
             isReceiverRegistered = false
         }
-        bluetoothAdapter.cancelDiscovery()
+        try { bluetoothAdapter.cancelDiscovery() } catch (_: SecurityException) {}
         Log.d(TAG, "Discovery stopped")
     }
 
+    /**
+     * Called by BlueMesManager after a HANDSHAKE packet is received so that the
+     * real BlueMes display name replaces the Bluetooth device name placeholder.
+     */
     fun updateUserName(address: String, name: String) {
         _nearbyUsers.update { current ->
-            current[address]?.let { user ->
-                current.toMutableMap().also { it[address] = user.copy(userName = name) }
-            } ?: current
+            val existing = current[address] ?: return@update current
+            current.toMutableMap().also { it[address] = existing.copy(userName = name) }
         }
     }
 
-    private fun handleDeviceFound(device: BluetoothDevice, rssi: Int) {
-        val address = device.address
-        val deviceName = try { device.name } catch (_: SecurityException) { null } ?: "Unknown"
-
-        // We add all visible devices; handshake will confirm they run BlueMes
+    /**
+     * Called by BlueMesManager to mark a device as connected in the list,
+     * even if it was not found by discovery (i.e. when we are the acceptor).
+     */
+    fun addOrUpdateUser(address: String, userName: String, state: ConnectionState) {
         _nearbyUsers.update { current ->
             val existing = current[address]
-            val updated = existing?.copy(rssi = rssi, lastSeenTimestamp = System.currentTimeMillis())
+            val updated = existing?.copy(userName = userName, connectionState = state)
                 ?: NearbyUser(
                     deviceAddress = address,
-                    deviceName = deviceName,
-                    userName = deviceName,
-                    rssi = rssi
+                    deviceName = address,
+                    userName = userName,
+                    connectionState = state
                 )
             current.toMutableMap().also { it[address] = updated }
         }
-        Log.d(TAG, "Device found: $deviceName ($address) RSSI=$rssi")
+    }
+
+    private fun onDeviceFound(device: BluetoothDevice, rssi: Int) {
+        val address = device.address
+        // Use device name as placeholder — real name comes from HANDSHAKE
+        val deviceName = try { device.name } catch (_: SecurityException) { null } ?: address
+
+        _nearbyUsers.update { current ->
+            val existing = current[address]
+            val updated = existing?.copy(
+                rssi = rssi,
+                lastSeenTimestamp = System.currentTimeMillis()
+            ) ?: NearbyUser(
+                deviceAddress = address,
+                deviceName = deviceName,
+                userName = deviceName, // placeholder until handshake
+                rssi = rssi
+            )
+            current.toMutableMap().also { it[address] = updated }
+        }
+        Log.d(TAG, "Found: $deviceName ($address) RSSI=$rssi")
     }
 
     private fun removeUser(address: String) {
         _nearbyUsers.update { it.toMutableMap().also { m -> m.remove(address) } }
-        Log.d(TAG, "Device gone: $address")
+        Log.d(TAG, "Removed: $address")
     }
 
     companion object {
-        private const val TAG = "BluetoothDiscovery"
+        private const val TAG = "BtDiscovery"
     }
 }

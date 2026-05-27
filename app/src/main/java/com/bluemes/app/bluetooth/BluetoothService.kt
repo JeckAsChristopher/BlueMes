@@ -20,32 +20,34 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Core Bluetooth service managing server socket acceptance, outbound connections,
- * and per-peer read/write threads.
+ * Core Bluetooth service.
+ *
+ * Key fix: only ONE instance of this class should exist in the whole app,
+ * owned by BlueMesManager. All ViewModels share this single instance so that
+ * connections made while the user is on NearbyFragment are still alive when
+ * they navigate to ChatFragment, and vice-versa.
  */
 class BluetoothService(
     private val bluetoothAdapter: BluetoothAdapter,
-    private val localUserName: String,
-    private val localAddress: String
+    val localUserName: String,
+    val localAddress: String
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var acceptJob: Job? = null
 
-    // Active sockets keyed by remote device address
     private val activeSockets = ConcurrentHashMap<String, ConnectedPeer>()
 
-    // Flows consumed by the ViewModel
-    private val _incomingMessages = MutableSharedFlow<MessagePacket>(extraBufferCapacity = 64)
+    private val _incomingMessages = MutableSharedFlow<MessagePacket>(extraBufferCapacity = 128)
     val incomingMessages: SharedFlow<MessagePacket> = _incomingMessages
 
-    private val _connectionEvents = MutableSharedFlow<ConnectionEvent>(extraBufferCapacity = 32)
+    private val _connectionEvents = MutableSharedFlow<ConnectionEvent>(extraBufferCapacity = 64)
     val connectionEvents: SharedFlow<ConnectionEvent> = _connectionEvents
 
     private val _connectedPeers = MutableStateFlow<Set<String>>(emptySet())
     val connectedPeers: StateFlow<Set<String>> = _connectedPeers
 
     // -------------------------------------------------------------------------
-    // Server-side: listen for incoming connections
+    // Server-side: accept incoming connections in a loop
     // -------------------------------------------------------------------------
 
     fun startServer() {
@@ -57,26 +59,28 @@ class BluetoothService(
                     Constants.BLUEMES_SERVICE_NAME,
                     Constants.BLUEMES_UUID
                 )
-                Log.d(TAG, "Server socket listening")
+                Log.d(TAG, "Server listening as '$localUserName' ($localAddress)")
+
                 while (isActive) {
                     val socket = try {
                         serverSocket.accept()
                     } catch (e: IOException) {
-                        if (isActive) Log.e(TAG, "Accept failed", e)
+                        if (isActive) Log.e(TAG, "accept() failed", e)
                         break
                     }
-                    val address = socket.remoteDevice.address
-                    if (!activeSockets.containsKey(address)) {
-                        Log.d(TAG, "Accepted connection from $address")
-                        launchConnectedPeer(socket, isInitiator = false)
+                    val addr = socket.remoteDevice.address
+                    if (!activeSockets.containsKey(addr)) {
+                        Log.d(TAG, "Accepted connection from $addr")
+                        launchPeer(socket, isInitiator = false)
                     } else {
-                        socket.close()
+                        // Already connected — reject duplicate
+                        try { socket.close() } catch (_: IOException) {}
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Server failed", e)
+                Log.e(TAG, "Server socket error", e)
             } finally {
-                serverSocket?.close()
+                try { serverSocket?.close() } catch (_: IOException) {}
             }
         }
     }
@@ -87,30 +91,35 @@ class BluetoothService(
 
     fun connect(device: BluetoothDevice) {
         val address = device.address
-        if (activeSockets.containsKey(address)) return
-
+        if (activeSockets.containsKey(address)) {
+            Log.d(TAG, "Already connected to $address, skipping")
+            return
+        }
         scope.launch {
             _connectionEvents.emit(ConnectionEvent.Connecting(address))
             var socket: BluetoothSocket? = null
             try {
                 socket = device.createRfcommSocketToServiceRecord(Constants.BLUEMES_UUID)
-                bluetoothAdapter.cancelDiscovery()
-                withTimeout(Constants.CONNECTION_TIMEOUT_MS) { socket.connect() }
+                // Cancel ongoing discovery — it slows connection
+                try { bluetoothAdapter.cancelDiscovery() } catch (_: SecurityException) {}
+                withTimeout(Constants.CONNECTION_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) { socket.connect() }
+                }
                 Log.d(TAG, "Connected to $address")
-                launchConnectedPeer(socket, isInitiator = true)
+                launchPeer(socket, isInitiator = true)
             } catch (e: Exception) {
-                Log.e(TAG, "Connect failed to $address", e)
-                socket?.close()
-                _connectionEvents.emit(ConnectionEvent.Failed(address, e.message ?: "Unknown error"))
+                Log.e(TAG, "connect() failed for $address", e)
+                try { socket?.close() } catch (_: IOException) {}
+                _connectionEvents.emit(ConnectionEvent.Failed(address, e.message ?: "Unknown"))
             }
         }
     }
 
     // -------------------------------------------------------------------------
-    // Per-peer coroutine
+    // Per-peer coroutine: send handshake then loop-read
     // -------------------------------------------------------------------------
 
-    private fun launchConnectedPeer(socket: BluetoothSocket, isInitiator: Boolean) {
+    private fun launchPeer(socket: BluetoothSocket, isInitiator: Boolean) {
         val address = socket.remoteDevice.address
         val peer = ConnectedPeer(socket)
         activeSockets[address] = peer
@@ -119,75 +128,65 @@ class BluetoothService(
         scope.launch {
             _connectionEvents.emit(ConnectionEvent.Connected(address))
 
-            // If we initiated, send a handshake immediately
-            if (isInitiator) {
-                sendPacket(address, buildHandshake())
-            }
+            // Initiator sends handshake first; acceptor sends handshake_ack
+            val handshakeType = if (isInitiator) PacketType.HANDSHAKE else PacketType.HANDSHAKE_ACK
+            sendPacketInternal(address, buildHandshake(handshakeType))
 
-            // Read loop
-            val inputStream: InputStream = try { socket.inputStream } catch (e: IOException) {
-                Log.e(TAG, "Cannot get input stream", e)
+            val inputStream: InputStream = try {
+                socket.inputStream
+            } catch (e: IOException) {
+                Log.e(TAG, "Cannot get inputStream for $address", e)
                 disconnect(address)
                 return@launch
             }
 
-            val buffer = StringBuilder()
-            val byteBuffer = ByteArray(Constants.SOCKET_BUFFER_SIZE)
+            val buf = StringBuilder()
+            val bytes = ByteArray(Constants.SOCKET_BUFFER_SIZE)
 
             try {
                 while (isActive && socket.isConnected) {
-                    val bytesRead = inputStream.read(byteBuffer)
-                    if (bytesRead == -1) break
-                    buffer.append(String(byteBuffer, 0, bytesRead, Charsets.UTF_8))
+                    val n = withContext(Dispatchers.IO) { inputStream.read(bytes) }
+                    if (n == -1) break
+                    buf.append(String(bytes, 0, n, Charsets.UTF_8))
 
-                    // Split on newline delimiter to extract complete packets
-                    var delimIdx: Int
-                    while (buffer.indexOf(Constants.PACKET_DELIMITER).also { delimIdx = it } != -1) {
-                        val raw = buffer.substring(0, delimIdx).trim()
-                        buffer.delete(0, delimIdx + 1)
-                        if (raw.isNotEmpty()) handleIncoming(address, raw)
+                    // Extract complete newline-delimited packets
+                    var idx: Int
+                    while (buf.indexOf(Constants.PACKET_DELIMITER).also { idx = it } != -1) {
+                        val raw = buf.substring(0, idx).trim()
+                        buf.delete(0, idx + 1)
+                        if (raw.isNotEmpty()) handleRaw(address, raw)
                     }
                 }
             } catch (e: IOException) {
-                if (isActive) Log.w(TAG, "Peer $address disconnected", e)
+                if (isActive) Log.w(TAG, "Read loop ended for $address: ${e.message}")
             } finally {
                 disconnect(address)
             }
         }
     }
 
-    private suspend fun handleIncoming(senderAddress: String, raw: String) {
+    private suspend fun handleRaw(senderAddr: String, raw: String) {
         val packet = MessagePacket.deserialize(raw) ?: run {
-            Log.w(TAG, "Malformed packet from $senderAddress, ignoring")
+            Log.w(TAG, "Malformed packet from $senderAddr — discarded")
             return
         }
-
         when (packet.type) {
-            PacketType.HANDSHAKE -> {
-                // Reply with ack
-                sendPacket(senderAddress, buildHandshake(PacketType.HANDSHAKE_ACK))
-                _incomingMessages.emit(packet)
-            }
-            PacketType.DISCONNECT -> {
-                disconnect(senderAddress)
-            }
-            else -> {
-                _incomingMessages.emit(packet)
-            }
+            PacketType.DISCONNECT -> disconnect(senderAddr)
+            else -> _incomingMessages.emit(packet)
         }
     }
 
     // -------------------------------------------------------------------------
-    // Send
+    // Send helpers
     // -------------------------------------------------------------------------
 
     fun sendPacket(address: String, packet: MessagePacket) {
-        scope.launch { sendPacketSuspend(address, packet) }
+        scope.launch { sendPacketInternal(address, packet) }
     }
 
-    private suspend fun sendPacketSuspend(address: String, packet: MessagePacket) {
+    private suspend fun sendPacketInternal(address: String, packet: MessagePacket) {
         val peer = activeSockets[address] ?: run {
-            Log.w(TAG, "No socket for $address")
+            Log.w(TAG, "sendPacket: no socket for $address")
             return
         }
         try {
@@ -211,12 +210,14 @@ class BluetoothService(
         try { peer.socket.close() } catch (_: IOException) {}
         updatePeerSet()
         scope.launch { _connectionEvents.emit(ConnectionEvent.Disconnected(address)) }
+        Log.d(TAG, "Disconnected from $address")
     }
 
     fun stopAll() {
         acceptJob?.cancel()
         activeSockets.keys.toList().forEach { disconnect(it) }
         scope.cancel()
+        Log.d(TAG, "BluetoothService stopped")
     }
 
     fun isConnected(address: String) = activeSockets.containsKey(address)
@@ -229,7 +230,7 @@ class BluetoothService(
         id = UUID.randomUUID().toString(),
         type = type,
         senderAddress = localAddress,
-        senderName = localUserName,
+        senderName = localUserName,   // ← always the user's chosen BlueMes name
         content = localUserName
     )
 
@@ -239,13 +240,18 @@ class BluetoothService(
     )
 
     companion object {
-        private const val TAG = "BluetoothService"
+        private const val TAG = "BtService"
     }
 }
 
+// ---------------------------------------------------------------------------
+// Connection events
+// ---------------------------------------------------------------------------
+
 sealed class ConnectionEvent {
-    data class Connecting(val address: String) : ConnectionEvent()
-    data class Connected(val address: String) : ConnectionEvent()
-    data class Disconnected(val address: String) : ConnectionEvent()
-    data class Failed(val address: String, val reason: String) : ConnectionEvent()
+    abstract val address: String
+    data class Connecting(override val address: String) : ConnectionEvent()
+    data class Connected(override val address: String) : ConnectionEvent()
+    data class Disconnected(override val address: String) : ConnectionEvent()
+    data class Failed(override val address: String, val reason: String) : ConnectionEvent()
 }
