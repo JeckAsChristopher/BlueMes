@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BlueMes</string>
+    <string name="bluetooth_required">Bluetooth is required for BlueMes to work.</string>
+    <string name="bluetooth_not_supported">This device does not support Bluetooth.</string>
+    <string name="permissions_required">Bluetooth permissions are required to find nearby users.</string>
+</resources>
