@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="blue_100">#DBEAFE</color>
-    <color name="blue_200">#BFDBFE</color>
-    <color name="blue_300">#93C5FD</color>
-    <color name="blue_500">#3B82F6</color>
-    <color name="blue_700">#1D4ED8</color>
-    <color name="blue_900">#1E3A8A</color>
-    <color name="white">#FFFFFF</color>
-    <color name="surface_light">#F9FAFB</color>
-    <color name="on_surface_light">#111827</color>
-    <color name="on_surface_variant_light">#6B7280</color>
-    <color name="surface_dark">#0F172A</color>
-    <color name="on_surface_dark">#F1F5F9</color>
-    <color name="on_surface_variant_dark">#94A3B8</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="blue_100">#BBDEFB</color>
+    <color name="blue_200">#90CAF9</color>
+    <color name="blue_300">#64B5F6</color>
+    <color name="blue_400">#42A5F5</color>
+    <color name="blue_600">#1E88E5</color>
+    <color name="blue_800">#1565C0</color>
+    <color name="blue_900">#0D47A1</color>
+    <color name="green_500">#4CAF50</color>
+    <color name="surface_variant">#F5F5F5</color>
+    <color name="bubble_out">#1E88E5</color>
+    <color name="bubble_in">#EEEEEE</color>
+    <color name="bubble_in_dark">#303030</color>
 </resources>

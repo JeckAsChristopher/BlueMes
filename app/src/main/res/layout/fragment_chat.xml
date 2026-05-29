@@ -2,99 +2,72 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
+    android:layout_width="match_parent" android:layout_height="match_parent"
     android:background="?attr/colorSurface">
-
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar"
-        android:layout_width="0dp"
-        android:layout_height="?attr/actionBarSize"
+        android:layout_width="0dp" android:layout_height="?attr/actionBarSize"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
         app:navigationIcon="@drawable/ic_arrow_back"
         app:navigationContentDescription="Back" />
-
     <TextView
         android:id="@+id/connectionStatus"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="4dp"
+        android:layout_width="0dp" android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp" android:paddingVertical="4dp"
         android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
         android:textColor="?attr/colorOnSurfaceVariant"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/toolbar" />
-
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recyclerMessages"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
+        android:layout_width="0dp" android:layout_height="0dp"
         android:clipToPadding="false"
-        android:paddingHorizontal="8dp"
-        android:paddingVertical="8dp"
+        android:paddingHorizontal="8dp" android:paddingVertical="8dp"
         app:layout_constraintBottom_toTopOf="@id/typingIndicator"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/connectionStatus" />
-
     <TextView
         android:id="@+id/typingIndicator"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="16dp"
-        android:paddingBottom="4dp"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp" android:paddingBottom="4dp"
         android:text="typing…"
         android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
         android:textColor="?attr/colorOnSurfaceVariant"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/inputRow"
         app:layout_constraintStart_toStartOf="parent" />
-
     <LinearLayout
         android:id="@+id/inputRow"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="8dp"
-        android:paddingVertical="8dp"
+        android:layout_width="0dp" android:layout_height="wrap_content"
+        android:gravity="center_vertical" android:orientation="horizontal"
+        android:paddingHorizontal="8dp" android:paddingVertical="8dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
-
         <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
+            android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense"
             android:hint="Message">
-
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/messageInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:imeOptions="actionSend"
                 android:inputType="textMultiLine|textCapSentences"
                 android:maxLines="4" />
-
         </com.google.android.material.textfield.TextInputLayout>
-
         <com.google.android.material.button.MaterialButton
             android:id="@+id/sendButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="48dp" android:layout_height="48dp"
             android:layout_marginStart="8dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
+            android:insetTop="0dp" android:insetBottom="0dp"
+            android:contentDescription="Send"
             app:icon="@drawable/ic_send"
-            app:iconGravity="textStart"
-            app:iconPadding="0dp"
-            style="@style/Widget.Material3.Button.IconButton.Filled"
-            android:contentDescription="Send" />
-
+            app:iconGravity="textStart" app:iconPadding="0dp"
+            style="@style/Widget.Material3.Button.IconButton.Filled" />
     </LinearLayout>
-
 </androidx.constraintlayout.widget.ConstraintLayout>

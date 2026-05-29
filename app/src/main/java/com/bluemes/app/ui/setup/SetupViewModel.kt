@@ -9,16 +9,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 class SetupViewModel : ViewModel() {
+    private val _done = MutableStateFlow(false)
+    val setupComplete: StateFlow<Boolean> = _done
 
-    private val _setupComplete = MutableStateFlow(false)
-    val setupComplete: StateFlow<Boolean> = _setupComplete
-
-    fun saveUserName(context: Context, name: String) {
+    fun save(context: Context, name: String) {
         viewModelScope.launch {
-            val prefs = UserPreferences(context)
-            prefs.setUserName(name.trim())
-            prefs.setSetupDone(true)
-            _setupComplete.value = true
+            val p = UserPreferences(context)
+            p.setUserName(name.trim())
+            p.setSetupDone(true)
+            _done.value = true
         }
     }
 }

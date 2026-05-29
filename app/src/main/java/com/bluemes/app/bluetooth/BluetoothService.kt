@@ -14,18 +14,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.IOException
-import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Core Bluetooth service.
+ * Low-level RFCOMM socket layer.
  *
- * Key fix: only ONE instance of this class should exist in the whole app,
- * owned by BlueMesManager. All ViewModels share this single instance so that
- * connections made while the user is on NearbyFragment are still alive when
- * they navigate to ChatFragment, and vice-versa.
+ * Exactly ONE instance of this class lives in the app (owned by BlueMesManager).
+ * All handshake verification, encryption, and connection-approval logic lives
+ * in BlueMesManager — this class only moves bytes.
+ *
+ * FIX — connection timeout shown despite messages flowing:
+ *   connect() now checks isConnected() first and emits Connected immediately
+ *   if the socket was already established via the server path, preventing the
+ *   "trying to connect as client → timeout" race.
  */
 class BluetoothService(
     private val bluetoothAdapter: BluetoothAdapter,
@@ -37,8 +40,8 @@ class BluetoothService(
 
     private val activeSockets = ConcurrentHashMap<String, ConnectedPeer>()
 
-    private val _incomingMessages = MutableSharedFlow<MessagePacket>(extraBufferCapacity = 128)
-    val incomingMessages: SharedFlow<MessagePacket> = _incomingMessages
+    private val _incomingRaw = MutableSharedFlow<RawPacket>(extraBufferCapacity = 256)
+    val incomingRaw: SharedFlow<RawPacket> = _incomingRaw
 
     private val _connectionEvents = MutableSharedFlow<ConnectionEvent>(extraBufferCapacity = 64)
     val connectionEvents: SharedFlow<ConnectionEvent> = _connectionEvents
@@ -47,7 +50,7 @@ class BluetoothService(
     val connectedPeers: StateFlow<Set<String>> = _connectedPeers
 
     // -------------------------------------------------------------------------
-    // Server-side: accept incoming connections in a loop
+    // Server — accept loop
     // -------------------------------------------------------------------------
 
     fun startServer() {
@@ -56,11 +59,9 @@ class BluetoothService(
             var serverSocket: BluetoothServerSocket? = null
             try {
                 serverSocket = bluetoothAdapter.listenUsingRfcommWithServiceRecord(
-                    Constants.BLUEMES_SERVICE_NAME,
-                    Constants.BLUEMES_UUID
+                    Constants.BLUEMES_SERVICE_NAME, Constants.BLUEMES_UUID
                 )
-                Log.d(TAG, "Server listening as '$localUserName' ($localAddress)")
-
+                Log.d(TAG, "Server listening")
                 while (isActive) {
                     val socket = try {
                         serverSocket.accept()
@@ -69,16 +70,15 @@ class BluetoothService(
                         break
                     }
                     val addr = socket.remoteDevice.address
-                    if (!activeSockets.containsKey(addr)) {
-                        Log.d(TAG, "Accepted connection from $addr")
-                        launchPeer(socket, isInitiator = false)
-                    } else {
-                        // Already connected — reject duplicate
+                    if (activeSockets.containsKey(addr)) {
                         try { socket.close() } catch (_: IOException) {}
+                    } else {
+                        Log.d(TAG, "Accepted socket from $addr")
+                        launchPeer(socket, isInitiator = false)
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Server socket error", e)
+                Log.e(TAG, "Server error", e)
             } finally {
                 try { serverSocket?.close() } catch (_: IOException) {}
             }
@@ -86,13 +86,14 @@ class BluetoothService(
     }
 
     // -------------------------------------------------------------------------
-    // Client-side: connect to a remote device
+    // Client — outgoing connection
     // -------------------------------------------------------------------------
 
     fun connect(device: BluetoothDevice) {
         val address = device.address
+        // FIX: if already connected via server path, just announce it — no new socket needed
         if (activeSockets.containsKey(address)) {
-            Log.d(TAG, "Already connected to $address, skipping")
+            scope.launch { _connectionEvents.emit(ConnectionEvent.Connected(address)) }
             return
         }
         scope.launch {
@@ -100,7 +101,6 @@ class BluetoothService(
             var socket: BluetoothSocket? = null
             try {
                 socket = device.createRfcommSocketToServiceRecord(Constants.BLUEMES_UUID)
-                // Cancel ongoing discovery — it slows connection
                 try { bluetoothAdapter.cancelDiscovery() } catch (_: SecurityException) {}
                 withTimeout(Constants.CONNECTION_TIMEOUT_MS) {
                     withContext(Dispatchers.IO) { socket.connect() }
@@ -108,101 +108,81 @@ class BluetoothService(
                 Log.d(TAG, "Connected to $address")
                 launchPeer(socket, isInitiator = true)
             } catch (e: Exception) {
-                Log.e(TAG, "connect() failed for $address", e)
+                Log.e(TAG, "connect() failed for $address: ${e.message}")
                 try { socket?.close() } catch (_: IOException) {}
-                _connectionEvents.emit(ConnectionEvent.Failed(address, e.message ?: "Unknown"))
+                // Only emit Failed if we're still not connected (server path may have won)
+                if (!activeSockets.containsKey(address)) {
+                    _connectionEvents.emit(ConnectionEvent.Failed(address, e.message ?: "Timeout"))
+                } else {
+                    _connectionEvents.emit(ConnectionEvent.Connected(address))
+                }
             }
         }
     }
 
     // -------------------------------------------------------------------------
-    // Per-peer coroutine: send handshake then loop-read
+    // Per-peer read loop
     // -------------------------------------------------------------------------
 
     private fun launchPeer(socket: BluetoothSocket, isInitiator: Boolean) {
         val address = socket.remoteDevice.address
-        val peer = ConnectedPeer(socket)
+        val peer = ConnectedPeer(socket, isInitiator)
         activeSockets[address] = peer
         updatePeerSet()
 
         scope.launch {
             _connectionEvents.emit(ConnectionEvent.Connected(address))
 
-            // Initiator sends handshake first; acceptor sends handshake_ack
-            val handshakeType = if (isInitiator) PacketType.HANDSHAKE else PacketType.HANDSHAKE_ACK
-            sendPacketInternal(address, buildHandshake(handshakeType))
-
-            val inputStream: InputStream = try {
-                socket.inputStream
-            } catch (e: IOException) {
-                Log.e(TAG, "Cannot get inputStream for $address", e)
-                disconnect(address)
-                return@launch
+            val inputStream = try { socket.inputStream } catch (e: IOException) {
+                Log.e(TAG, "No inputStream for $address", e)
+                disconnect(address); return@launch
             }
 
             val buf = StringBuilder()
             val bytes = ByteArray(Constants.SOCKET_BUFFER_SIZE)
-
             try {
                 while (isActive && socket.isConnected) {
                     val n = withContext(Dispatchers.IO) { inputStream.read(bytes) }
                     if (n == -1) break
                     buf.append(String(bytes, 0, n, Charsets.UTF_8))
-
-                    // Extract complete newline-delimited packets
                     var idx: Int
                     while (buf.indexOf(Constants.PACKET_DELIMITER).also { idx = it } != -1) {
                         val raw = buf.substring(0, idx).trim()
                         buf.delete(0, idx + 1)
-                        if (raw.isNotEmpty()) handleRaw(address, raw)
+                        if (raw.isNotEmpty()) _incomingRaw.emit(RawPacket(address, isInitiator, raw))
                     }
                 }
             } catch (e: IOException) {
-                if (isActive) Log.w(TAG, "Read loop ended for $address: ${e.message}")
+                if (isActive) Log.w(TAG, "Read ended for $address: ${e.message}")
             } finally {
                 disconnect(address)
             }
         }
     }
 
-    private suspend fun handleRaw(senderAddr: String, raw: String) {
-        val packet = MessagePacket.deserialize(raw) ?: run {
-            Log.w(TAG, "Malformed packet from $senderAddr — discarded")
-            return
-        }
-        when (packet.type) {
-            PacketType.DISCONNECT -> disconnect(senderAddr)
-            else -> _incomingMessages.emit(packet)
-        }
-    }
-
     // -------------------------------------------------------------------------
-    // Send helpers
+    // Send
     // -------------------------------------------------------------------------
 
-    fun sendPacket(address: String, packet: MessagePacket) {
-        scope.launch { sendPacketInternal(address, packet) }
-    }
-
-    private suspend fun sendPacketInternal(address: String, packet: MessagePacket) {
-        val peer = activeSockets[address] ?: run {
-            Log.w(TAG, "sendPacket: no socket for $address")
-            return
-        }
-        try {
-            val data = (packet.serialize() + Constants.PACKET_DELIMITER).toByteArray(Charsets.UTF_8)
-            withContext(Dispatchers.IO) {
-                peer.outputStream.write(data)
-                peer.outputStream.flush()
+    fun sendRaw(address: String, json: String) {
+        scope.launch {
+            val peer = activeSockets[address] ?: run {
+                Log.w(TAG, "sendRaw: no socket for $address"); return@launch
             }
-        } catch (e: IOException) {
-            Log.e(TAG, "Send failed to $address", e)
-            disconnect(address)
+            try {
+                val data = (json + Constants.PACKET_DELIMITER).toByteArray(Charsets.UTF_8)
+                withContext(Dispatchers.IO) { peer.outputStream.write(data); peer.outputStream.flush() }
+            } catch (e: IOException) {
+                Log.e(TAG, "Send failed to $address", e)
+                disconnect(address)
+            }
         }
     }
 
+    fun sendPacket(address: String, packet: MessagePacket) = sendRaw(address, packet.serialize())
+
     // -------------------------------------------------------------------------
-    // Disconnect
+    // Lifecycle
     // -------------------------------------------------------------------------
 
     fun disconnect(address: String) {
@@ -210,48 +190,35 @@ class BluetoothService(
         try { peer.socket.close() } catch (_: IOException) {}
         updatePeerSet()
         scope.launch { _connectionEvents.emit(ConnectionEvent.Disconnected(address)) }
-        Log.d(TAG, "Disconnected from $address")
     }
 
     fun stopAll() {
         acceptJob?.cancel()
         activeSockets.keys.toList().forEach { disconnect(it) }
         scope.cancel()
-        Log.d(TAG, "BluetoothService stopped")
     }
 
     fun isConnected(address: String) = activeSockets.containsKey(address)
+    fun isInitiator(address: String) = activeSockets[address]?.isInitiator ?: false
 
-    private fun updatePeerSet() {
-        _connectedPeers.value = activeSockets.keys.toSet()
-    }
-
-    private fun buildHandshake(type: PacketType = PacketType.HANDSHAKE) = MessagePacket(
-        id = UUID.randomUUID().toString(),
-        type = type,
-        senderAddress = localAddress,
-        senderName = localUserName,   // ← always the user's chosen BlueMes name
-        content = localUserName
-    )
+    private fun updatePeerSet() { _connectedPeers.value = activeSockets.keys.toSet() }
 
     private data class ConnectedPeer(
         val socket: BluetoothSocket,
+        val isInitiator: Boolean,
         val outputStream: OutputStream = socket.outputStream
     )
 
-    companion object {
-        private const val TAG = "BtService"
-    }
+    companion object { private const val TAG = "BtService" }
 }
 
-// ---------------------------------------------------------------------------
-// Connection events
-// ---------------------------------------------------------------------------
+/** Raw bytes from a peer before validation / decryption in BlueMesManager. */
+data class RawPacket(val senderAddress: String, val weAreInitiator: Boolean, val json: String)
 
 sealed class ConnectionEvent {
     abstract val address: String
-    data class Connecting(override val address: String) : ConnectionEvent()
-    data class Connected(override val address: String) : ConnectionEvent()
-    data class Disconnected(override val address: String) : ConnectionEvent()
-    data class Failed(override val address: String, val reason: String) : ConnectionEvent()
+    data class Connecting   (override val address: String)                   : ConnectionEvent()
+    data class Connected    (override val address: String)                   : ConnectionEvent()
+    data class Disconnected (override val address: String)                   : ConnectionEvent()
+    data class Failed       (override val address: String, val reason: String) : ConnectionEvent()
 }

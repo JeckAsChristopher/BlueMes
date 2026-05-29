@@ -5,11 +5,9 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="?attr/colorSurface">
-
     <ImageView
         android:id="@+id/logoView"
-        android:layout_width="72dp"
-        android:layout_height="72dp"
+        android:layout_width="72dp" android:layout_height="72dp"
         android:src="@drawable/ic_bluetooth_logo"
         app:tint="?attr/colorPrimary"
         app:layout_constraintBottom_toTopOf="@id/appNameText"
@@ -17,11 +15,9 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintVertical_chainStyle="packed" />
-
     <TextView
         android:id="@+id/appNameText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="BlueMes"
         android:textAppearance="@style/TextAppearance.Material3.HeadlineLarge"
@@ -31,5 +27,4 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/logoView" />
-
 </androidx.constraintlayout.widget.ConstraintLayout>

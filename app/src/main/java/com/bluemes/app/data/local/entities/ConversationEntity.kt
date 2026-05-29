@@ -5,8 +5,7 @@ import androidx.room.PrimaryKey
 
 @Entity(tableName = "conversations")
 data class ConversationEntity(
-    @PrimaryKey
-    val deviceAddress: String,
+    @PrimaryKey val deviceAddress: String,
     val userName: String,
     val lastMessage: String = "",
     val lastMessageTimestamp: Long = 0L,

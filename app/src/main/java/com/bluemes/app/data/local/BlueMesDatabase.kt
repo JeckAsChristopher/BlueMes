@@ -9,30 +9,17 @@ import com.bluemes.app.data.local.dao.MessageDao
 import com.bluemes.app.data.local.entities.ConversationEntity
 import com.bluemes.app.data.local.entities.MessageEntity
 
-@Database(
-    entities = [ConversationEntity::class, MessageEntity::class],
-    version = 1,
-    exportSchema = false
-)
+@Database(entities = [ConversationEntity::class, MessageEntity::class], version = 1, exportSchema = false)
 abstract class BlueMesDatabase : RoomDatabase() {
-
     abstract fun conversationDao(): ConversationDao
     abstract fun messageDao(): MessageDao
 
     companion object {
-        @Volatile
-        private var INSTANCE: BlueMesDatabase? = null
-
-        fun getInstance(context: Context): BlueMesDatabase =
+        @Volatile private var INSTANCE: BlueMesDatabase? = null
+        fun getInstance(ctx: Context): BlueMesDatabase =
             INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    BlueMesDatabase::class.java,
-                    "bluemes_db"
-                )
-                    .fallbackToDestructiveMigration()
-                    .build()
-                    .also { INSTANCE = it }
+                INSTANCE ?: Room.databaseBuilder(ctx.applicationContext, BlueMesDatabase::class.java, "bluemes_db")
+                    .fallbackToDestructiveMigration().build().also { INSTANCE = it }
             }
     }
 }

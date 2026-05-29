@@ -1,9 +1,7 @@
 package com.bluemes.app.ui.history
 
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
+import android.view.*
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -18,70 +16,47 @@ import com.bluemes.app.ui.history.adapters.ConversationAdapter
 import kotlinx.coroutines.launch
 
 class HistoryFragment : Fragment() {
-
-    private var _binding: FragmentHistoryBinding? = null
-    private val binding get() = _binding!!
-
-    private val viewModel: HistoryViewModel by viewModels {
-        HistoryViewModelFactory(requireContext())
-    }
-
+    private var _b: FragmentHistoryBinding? = null
+    private val b get() = _b!!
+    private val vm: HistoryViewModel by viewModels { HistoryViewModelFactory(requireContext()) }
     private lateinit var adapter: ConversationAdapter
 
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        _binding = FragmentHistoryBinding.inflate(inflater, container, false)
-        return binding.root
+    override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View {
+        _b = FragmentHistoryBinding.inflate(i, c, false); return b.root
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-
+    override fun onViewCreated(view: View, s: Bundle?) {
+        super.onViewCreated(view, s)
         adapter = ConversationAdapter { conv ->
-            val bundle = Bundle().apply {
+            findNavController().navigate(R.id.action_history_to_chat, Bundle().apply {
                 putString("deviceAddress", conv.deviceAddress)
                 putString("userName", conv.userName)
-            }
-            findNavController().navigate(R.id.action_history_to_chat, bundle)
+            })
         }
+        b.recyclerHistory.layoutManager = LinearLayoutManager(requireContext())
+        b.recyclerHistory.adapter = adapter
+        b.searchInput.doAfterTextChanged { vm.setQuery(it?.toString() ?: "") }
 
-        binding.recyclerHistory.layoutManager = LinearLayoutManager(requireContext())
-        binding.recyclerHistory.adapter = adapter
-
-        binding.searchInput.doAfterTextChanged { text ->
-            viewModel.setSearchQuery(text?.toString() ?: "")
-        }
-
-        binding.bottomNav.setOnItemSelectedListener { item ->
+        b.bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {
-                R.id.nav_nearby -> {
-                    findNavController().navigate(R.id.action_history_to_nearby)
-                    true
-                }
-                R.id.nav_history -> true
-                R.id.nav_settings -> {
-                    findNavController().navigate(R.id.action_history_to_settings)
-                    true
-                }
+                R.id.nav_nearby   -> { findNavController().navigate(R.id.action_history_to_nearby); true }
+                R.id.nav_history  -> true
+                R.id.nav_settings -> { findNavController().navigate(R.id.action_history_to_settings); true }
                 else -> false
             }
         }
-        binding.bottomNav.selectedItemId = R.id.nav_history
+        b.bottomNav.selectedItemId = R.id.nav_history
 
         viewLifecycleOwner.lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.conversations.collect { list ->
+                vm.conversations.collect { list ->
                     adapter.submitList(list)
-                    binding.emptyState.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
-                    binding.recyclerHistory.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+                    b.emptyState.visibility    = if (list.isEmpty()) View.VISIBLE else View.GONE
+                    b.recyclerHistory.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
                 }
             }
         }
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-    }
+    override fun onDestroyView() { super.onDestroyView(); _b = null }
 }

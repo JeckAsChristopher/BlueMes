@@ -1,9 +1,7 @@
 package com.bluemes.app.ui.setup
 
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
+import android.view.*
 import android.view.inputmethod.EditorInfo
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
@@ -17,57 +15,38 @@ import com.bluemes.app.databinding.FragmentSetupBinding
 import kotlinx.coroutines.launch
 
 class SetupFragment : Fragment() {
+    private var _b: FragmentSetupBinding? = null
+    private val b get() = _b!!
+    private val vm: SetupViewModel by viewModels()
 
-    private var _binding: FragmentSetupBinding? = null
-    private val binding get() = _binding!!
-    private val viewModel: SetupViewModel by viewModels()
-
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        _binding = FragmentSetupBinding.inflate(inflater, container, false)
-        return binding.root
+    override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View {
+        _b = FragmentSetupBinding.inflate(i, c, false); return b.root
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
+    override fun onViewCreated(view: View, s: Bundle?) {
+        super.onViewCreated(view, s)
+        b.contentCard.translationY = 80f; b.contentCard.alpha = 0f
+        b.contentCard.animate().translationY(0f).alpha(1f).setDuration(400).setStartDelay(100).start()
 
-        // Slide-in entrance animation
-        binding.contentCard.translationY = 80f
-        binding.contentCard.alpha = 0f
-        binding.contentCard.animate().translationY(0f).alpha(1f).setDuration(400).setStartDelay(100).start()
-
-        binding.nameInput.doAfterTextChanged { text ->
-            val trimmed = text?.toString()?.trim() ?: ""
-            binding.continueButton.isEnabled = trimmed.length in 2..30
+        b.nameInput.doAfterTextChanged { t ->
+            b.continueButton.isEnabled = (t?.toString()?.trim()?.length ?: 0) in 2..30
         }
-
-        binding.nameInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE && binding.continueButton.isEnabled) {
-                onContinue()
-                true
-            } else false
+        b.nameInput.setOnEditorActionListener { _, id, _ ->
+            if (id == EditorInfo.IME_ACTION_DONE && b.continueButton.isEnabled) { go(); true } else false
         }
-
-        binding.continueButton.setOnClickListener { onContinue() }
+        b.continueButton.setOnClickListener { go() }
 
         viewLifecycleOwner.lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.setupComplete.collect { done ->
-                    if (done) findNavController().navigate(R.id.action_setup_to_nearby)
-                }
+                vm.setupComplete.collect { if (it) findNavController().navigate(R.id.action_setup_to_nearby) }
             }
         }
     }
 
-    private fun onContinue() {
-        val name = binding.nameInput.text.toString().trim()
-        if (name.length < 2) return
-        viewModel.saveUserName(requireContext(), name)
+    private fun go() {
+        val n = b.nameInput.text.toString().trim()
+        if (n.length >= 2) vm.save(requireContext(), n)
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-    }
+    override fun onDestroyView() { super.onDestroyView(); _b = null }
 }

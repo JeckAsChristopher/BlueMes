@@ -2,74 +2,51 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="?attr/colorSurface"
-    android:padding="24dp">
-
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="?attr/colorSurface" android:padding="24dp">
     <LinearLayout
         android:id="@+id/contentCard"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
+        android:layout_width="0dp" android:layout_height="wrap_content"
         android:orientation="vertical"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
-
         <ImageView
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="48dp" android:layout_height="48dp"
             android:layout_gravity="center_horizontal"
             android:src="@drawable/ic_bluetooth_logo"
             app:tint="?attr/colorPrimary" />
-
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="20dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal" android:layout_marginTop="20dp"
             android:text="Welcome to BlueMes"
             android:textAppearance="@style/TextAppearance.Material3.HeadlineMedium"
             android:textColor="?attr/colorOnSurface" />
-
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal" android:layout_marginTop="8dp"
             android:gravity="center"
             android:text="Chat with people nearby using only Bluetooth — no internet required."
             android:textAppearance="@style/TextAppearance.Material3.BodyMedium"
             android:textColor="?attr/colorOnSurfaceVariant" />
-
         <com.google.android.material.textfield.TextInputLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="36dp"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
             android:hint="Your name">
-
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/nameInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:imeOptions="actionDone"
                 android:inputType="textPersonName|textCapWords"
                 android:maxLength="30" />
-
         </com.google.android.material.textfield.TextInputLayout>
-
         <com.google.android.material.button.MaterialButton
             android:id="@+id/continueButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:enabled="false"
-            android:text="Get Started"
-            android:textAllCaps="false"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" android:enabled="false"
+            android:text="Get Started" android:textAllCaps="false"
             style="@style/Widget.Material3.Button" />
-
     </LinearLayout>
-
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -9,81 +9,50 @@ import com.bluemes.app.models.PacketType
 import kotlinx.coroutines.flow.Flow
 
 class ChatRepository(
-    private val conversationDao: ConversationDao,
-    private val messageDao: MessageDao
+    private val convDao: ConversationDao,
+    private val msgDao: MessageDao
 ) {
-    fun getAllConversations(): Flow<List<ConversationEntity>> =
-        conversationDao.getAllConversations()
-
-    fun searchConversations(query: String): Flow<List<ConversationEntity>> =
-        conversationDao.searchConversations(query)
-
-    fun getMessages(conversationId: String): Flow<List<MessageEntity>> =
-        messageDao.getMessagesForConversation(conversationId)
+    fun getAllConversations()          = convDao.getAllConversations()
+    fun searchConversations(q: String) = convDao.search(q)
+    fun getMessages(id: String)        = msgDao.getMessages(id)
 
     suspend fun ensureConversation(address: String, userName: String) {
-        val existing = conversationDao.getConversation(address)
-        if (existing == null) {
-            conversationDao.insertOrUpdate(
-                ConversationEntity(deviceAddress = address, userName = userName)
-            )
-        } else if (existing.userName != userName) {
-            conversationDao.insertOrUpdate(existing.copy(userName = userName))
-        }
+        val ex = convDao.getConversation(address)
+        if (ex == null) convDao.insertOrUpdate(ConversationEntity(address, userName))
+        else if (ex.userName != userName) convDao.insertOrUpdate(ex.copy(userName = userName))
     }
 
-    suspend fun saveIncomingMessage(packet: MessagePacket) {
+    suspend fun saveIncoming(packet: MessagePacket) {
         if (packet.type != PacketType.TEXT_MESSAGE) return
         ensureConversation(packet.senderAddress, packet.senderName)
-        val entity = MessageEntity(
-            messageId = packet.id,
-            conversationId = packet.senderAddress,
-            senderAddress = packet.senderAddress,
-            senderName = packet.senderName,
-            content = packet.content,
-            timestamp = packet.timestamp,
-            isMine = false
-        )
-        messageDao.insert(entity)
-        conversationDao.updateLastMessage(packet.senderAddress, packet.content, packet.timestamp)
-        conversationDao.incrementUnread(packet.senderAddress)
+        msgDao.insert(MessageEntity(
+            messageId = packet.id, conversationId = packet.senderAddress,
+            senderAddress = packet.senderAddress, senderName = packet.senderName,
+            content = packet.content, timestamp = packet.timestamp, isMine = false
+        ))
+        convDao.updateLastMessage(packet.senderAddress, packet.content, packet.timestamp)
+        convDao.incrementUnread(packet.senderAddress)
     }
 
-    suspend fun saveOutgoingMessage(
-        recipientAddress: String,
-        recipientName: String,
-        messageId: String,
-        content: String,
-        senderAddress: String,
-        senderName: String,
-        timestamp: Long
+    suspend fun saveOutgoing(
+        recipientAddress: String, recipientName: String,
+        messageId: String, content: String,
+        senderAddress: String, senderName: String, timestamp: Long
     ) {
         ensureConversation(recipientAddress, recipientName)
-        val entity = MessageEntity(
-            messageId = messageId,
-            conversationId = recipientAddress,
-            senderAddress = senderAddress,
-            senderName = senderName,
-            content = content,
-            timestamp = timestamp,
-            isMine = true,
-            isRead = true
-        )
-        messageDao.insert(entity)
-        conversationDao.updateLastMessage(recipientAddress, content, timestamp)
+        msgDao.insert(MessageEntity(
+            messageId = messageId, conversationId = recipientAddress,
+            senderAddress = senderAddress, senderName = senderName,
+            content = content, timestamp = timestamp, isMine = true, isRead = true
+        ))
+        convDao.updateLastMessage(recipientAddress, content, timestamp)
     }
 
-    suspend fun markConversationRead(address: String) {
-        messageDao.markAllRead(address)
-        conversationDao.clearUnread(address)
+    suspend fun markRead(address: String) {
+        msgDao.markAllRead(address)
+        convDao.clearUnread(address)
     }
 
-    suspend fun deleteConversation(address: String) {
-        conversationDao.delete(address)
-    }
-
-    suspend fun deleteAllHistory() {
-        messageDao.deleteAll()
-        conversationDao.deleteAll()
-    }
+    suspend fun deleteConversation(address: String) = convDao.delete(address)
+    suspend fun deleteAll() { msgDao.deleteAll(); convDao.deleteAll() }
 }

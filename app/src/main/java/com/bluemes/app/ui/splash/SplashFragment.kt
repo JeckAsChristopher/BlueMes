@@ -1,9 +1,7 @@
 package com.bluemes.app.ui.splash
 
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
+import android.view.*
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
@@ -15,41 +13,27 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class SplashFragment : Fragment() {
+    private var _b: FragmentSplashBinding? = null
+    private val b get() = _b!!
 
-    private var _binding: FragmentSplashBinding? = null
-    private val binding get() = _binding!!
-
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        _binding = FragmentSplashBinding.inflate(inflater, container, false)
-        return binding.root
+    override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View {
+        _b = FragmentSplashBinding.inflate(i, c, false); return b.root
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-
-        // Animate logo in
-        binding.logoView.alpha = 0f
-        binding.appNameText.alpha = 0f
-        binding.logoView.animate().alpha(1f).setDuration(600).start()
-        binding.appNameText.animate().alpha(1f).setDuration(600).setStartDelay(200).start()
-
-        val prefs = UserPreferences(requireContext())
+    override fun onViewCreated(view: View, s: Bundle?) {
+        super.onViewCreated(view, s)
+        b.logoView.alpha = 0f; b.appNameText.alpha = 0f
+        b.logoView.animate().alpha(1f).setDuration(600).start()
+        b.appNameText.animate().alpha(1f).setDuration(600).setStartDelay(200).start()
 
         lifecycleScope.launch {
-            delay(1600)
-            val setupDone = prefs.isSetupDone.first()
-            if (setupDone) {
-                findNavController().navigate(R.id.action_splash_to_nearby)
-            } else {
-                findNavController().navigate(R.id.action_splash_to_setup)
-            }
+            delay(1500)
+            val done = UserPreferences(requireContext()).isSetupDone.first()
+            findNavController().navigate(
+                if (done) R.id.action_splash_to_nearby else R.id.action_splash_to_setup
+            )
         }
     }
 
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-    }
+    override fun onDestroyView() { super.onDestroyView(); _b = null }
 }

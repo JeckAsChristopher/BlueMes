@@ -7,19 +7,16 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "messages",
-    foreignKeys = [
-        ForeignKey(
-            entity = ConversationEntity::class,
-            parentColumns = ["deviceAddress"],
-            childColumns = ["conversationId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
+    foreignKeys = [ForeignKey(
+        entity = ConversationEntity::class,
+        parentColumns = ["deviceAddress"],
+        childColumns = ["conversationId"],
+        onDelete = ForeignKey.CASCADE
+    )],
     indices = [Index(value = ["conversationId"])]
 )
 data class MessageEntity(
-    @PrimaryKey
-    val messageId: String,
+    @PrimaryKey val messageId: String,
     val conversationId: String,
     val senderAddress: String,
     val senderName: String,

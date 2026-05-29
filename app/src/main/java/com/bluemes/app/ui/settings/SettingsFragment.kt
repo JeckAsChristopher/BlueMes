@@ -2,9 +2,8 @@ package com.bluemes.app.ui.settings
 
 import android.bluetooth.BluetoothManager
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
+import android.view.*
+import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.fragment.app.Fragment
@@ -19,101 +18,60 @@ import com.bluemes.app.databinding.FragmentSettingsBinding
 import kotlinx.coroutines.launch
 
 class SettingsFragment : Fragment() {
+    private var _b: FragmentSettingsBinding? = null
+    private val b get() = _b!!
+    private val vm: SettingsViewModel by viewModels { SettingsViewModelFactory(requireContext()) }
 
-    private var _binding: FragmentSettingsBinding? = null
-    private val binding get() = _binding!!
-    private val viewModel: SettingsViewModel by viewModels {
-        SettingsViewModelFactory(requireContext())
+    override fun onCreateView(i: LayoutInflater, c: ViewGroup?, s: Bundle?): View {
+        _b = FragmentSettingsBinding.inflate(i, c, false); return b.root
     }
 
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
-        _binding = FragmentSettingsBinding.inflate(inflater, container, false)
-        return binding.root
-    }
-
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-
-        binding.appVersion.text = "Version ${BuildConfig.VERSION_NAME}"
-
-        val btManager = requireContext().getSystemService(BluetoothManager::class.java)
-        val btEnabled = btManager?.adapter?.isEnabled == true
-        binding.bluetoothStatus.text = if (btEnabled) "Bluetooth: On" else "Bluetooth: Off"
+    override fun onViewCreated(view: View, s: Bundle?) {
+        super.onViewCreated(view, s)
+        b.appVersion.text = "Version ${BuildConfig.VERSION_NAME}"
+        val btOn = requireContext().getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+        b.bluetoothStatus.text = if (btOn) "Bluetooth: On" else "Bluetooth: Off"
 
         viewLifecycleOwner.lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.userName.collect { name ->
-                    binding.currentName.text = name ?: "Not set"
-                }
-            }
+            repeatOnLifecycle(Lifecycle.State.STARTED) { vm.userName.collect { b.currentName.text = it ?: "Not set" } }
         }
-
         viewLifecycleOwner.lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.isDarkMode.collect { dark ->
-                    binding.darkModeSwitch.isChecked = dark
-                }
-            }
+            repeatOnLifecycle(Lifecycle.State.STARTED) { vm.isDark.collect { b.darkModeSwitch.isChecked = it } }
         }
 
-        binding.changeNameButton.setOnClickListener {
-            showChangeNameDialog()
+        b.changeNameButton.setOnClickListener {
+            val input = EditText(requireContext()).apply { hint = "Enter new name"; setText(b.currentName.text) }
+            AlertDialog.Builder(requireContext()).setTitle("Change Name").setView(input)
+                .setPositiveButton("Save") { _, _ ->
+                    val n = input.text.toString().trim()
+                    if (n.length in 2..30) vm.setName(n)
+                }.setNegativeButton("Cancel", null).show()
         }
 
-        binding.clearHistoryButton.setOnClickListener {
-            AlertDialog.Builder(requireContext())
-                .setTitle("Clear Chat History")
-                .setMessage("This will permanently delete all conversations and messages. This cannot be undone.")
-                .setPositiveButton("Clear") { _, _ -> viewModel.clearHistory() }
-                .setNegativeButton("Cancel", null)
-                .show()
+        b.clearHistoryButton.setOnClickListener {
+            AlertDialog.Builder(requireContext()).setTitle("Clear Chat History")
+                .setMessage("This will permanently delete all conversations and messages.")
+                .setPositiveButton("Clear") { _, _ -> vm.clearHistory() }
+                .setNegativeButton("Cancel", null).show()
         }
 
-        binding.darkModeSwitch.setOnCheckedChangeListener { _, checked ->
-            viewModel.setDarkMode(checked)
+        b.darkModeSwitch.setOnCheckedChangeListener { _, on ->
+            vm.setDark(on)
             AppCompatDelegate.setDefaultNightMode(
-                if (checked) AppCompatDelegate.MODE_NIGHT_YES
-                else AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                if (on) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
             )
         }
 
-        binding.bottomNav.setOnItemSelectedListener { item ->
+        b.bottomNav.setOnItemSelectedListener { item ->
             when (item.itemId) {
-                R.id.nav_nearby -> {
-                    findNavController().navigate(R.id.action_settings_to_nearby)
-                    true
-                }
-                R.id.nav_history -> {
-                    findNavController().navigate(R.id.action_settings_to_history)
-                    true
-                }
+                R.id.nav_nearby   -> { findNavController().navigate(R.id.action_settings_to_nearby); true }
+                R.id.nav_history  -> { findNavController().navigate(R.id.action_settings_to_history); true }
                 R.id.nav_settings -> true
                 else -> false
             }
         }
-        binding.bottomNav.selectedItemId = R.id.nav_settings
+        b.bottomNav.selectedItemId = R.id.nav_settings
     }
 
-    private fun showChangeNameDialog() {
-        val input = android.widget.EditText(requireContext()).apply {
-            hint = "Enter new name"
-            setText(binding.currentName.text)
-        }
-        AlertDialog.Builder(requireContext())
-            .setTitle("Change Name")
-            .setView(input)
-            .setPositiveButton("Save") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.length in 2..30) viewModel.updateUserName(name)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        _binding = null
-    }
+    override fun onDestroyView() { super.onDestroyView(); _b = null }
 }

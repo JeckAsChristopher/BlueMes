@@ -1,7 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BlueMes</string>
-    <string name="bluetooth_required">Bluetooth is required for BlueMes to work.</string>
+    <string name="bluetooth_required">Bluetooth is required to use BlueMes.</string>
+    <string name="permissions_required">Bluetooth permissions are required to scan for nearby users.</string>
     <string name="bluetooth_not_supported">This device does not support Bluetooth.</string>
-    <string name="permissions_required">Bluetooth permissions are required to find nearby users.</string>
+    <string name="scanning">Scanning for nearby BlueMes users…</string>
+    <string name="empty_history">No conversations yet.\nStart chatting from Nearby.</string>
+    <string name="connection_request_title">Connection Request</string>
+    <string name="connection_request_format">%1$s wants to connect to you.</string>
+    <string name="accept">Accept</string>
+    <string name="decline">Decline</string>
+    <string name="refused_format">%1$s refused to chat with you.</string>
+    <string name="send">Send</string>
+    <string name="message_hint">Message</string>
+    <string name="typing">typing…</string>
+    <string name="connected">Connected</string>
+    <string name="connecting">Connecting…</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="welcome">Welcome to BlueMes</string>
+    <string name="welcome_sub">Chat with people nearby using only Bluetooth — no internet required.</string>
+    <string name="name_hint">Your name</string>
+    <string name="get_started">Get Started</string>
+    <string name="nav_nearby">Nearby</string>
+    <string name="nav_history">Chats</string>
+    <string name="nav_settings">Settings</string>
 </resources>

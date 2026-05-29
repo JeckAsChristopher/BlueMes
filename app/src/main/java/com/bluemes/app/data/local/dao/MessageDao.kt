@@ -6,25 +6,21 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
+    @Query("SELECT * FROM messages WHERE conversationId=:id ORDER BY timestamp ASC")
+    fun getMessages(id: String): Flow<List<MessageEntity>>
 
-    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
-    fun getMessagesForConversation(conversationId: String): Flow<List<MessageEntity>>
-
-    @Query("SELECT * FROM messages WHERE messageId = :messageId LIMIT 1")
-    suspend fun getMessage(messageId: String): MessageEntity?
+    @Query("SELECT * FROM messages WHERE messageId=:id LIMIT 1")
+    suspend fun getMessage(id: String): MessageEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(message: MessageEntity)
+    suspend fun insert(m: MessageEntity)
 
-    @Query("UPDATE messages SET isRead = 1 WHERE conversationId = :conversationId AND NOT isMine")
-    suspend fun markAllRead(conversationId: String)
+    @Query("UPDATE messages SET isRead=1 WHERE conversationId=:id AND NOT isMine")
+    suspend fun markAllRead(id: String)
 
-    @Query("DELETE FROM messages WHERE conversationId = :conversationId")
-    suspend fun deleteForConversation(conversationId: String)
+    @Query("DELETE FROM messages WHERE conversationId=:id")
+    suspend fun deleteFor(id: String)
 
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
-
-    @Query("SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId")
-    suspend fun countMessages(conversationId: String): Int
 }

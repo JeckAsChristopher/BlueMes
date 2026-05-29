@@ -11,36 +11,25 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
-class HistoryViewModel(context: Context) : ViewModel() {
-
-    private val db = BlueMesApplication.instance.database
-    private val repo = ChatRepository(db.conversationDao(), db.messageDao())
-
-    private val searchQuery = MutableStateFlow("")
+class HistoryViewModel(ctx: Context) : ViewModel() {
+    private val repo = ChatRepository(
+        BlueMesApplication.instance.database.conversationDao(),
+        BlueMesApplication.instance.database.messageDao()
+    )
+    private val query = MutableStateFlow("")
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    val conversations: StateFlow<List<ConversationEntity>> = searchQuery
+    val conversations: StateFlow<List<ConversationEntity>> = query
         .debounce(200)
-        .flatMapLatest { query ->
-            if (query.isBlank()) repo.getAllConversations()
-            else repo.searchConversations(query)
-        }
+        .flatMapLatest { q -> if (q.isBlank()) repo.getAllConversations() else repo.searchConversations(q) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun setSearchQuery(query: String) {
-        searchQuery.value = query
-    }
-
-    fun deleteAllHistory() {
-        viewModelScope.launch {
-            repo.deleteAllHistory()
-        }
-    }
+    fun setQuery(q: String) { query.value = q }
+    fun clearAll() { viewModelScope.launch { repo.deleteAll() } }
 }
 
-class HistoryViewModelFactory(private val context: Context) : ViewModelProvider.Factory {
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        @Suppress("UNCHECKED_CAST")
-        return HistoryViewModel(context.applicationContext) as T
+class HistoryViewModelFactory(private val ctx: Context) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(c: Class<T>): T {
+        @Suppress("UNCHECKED_CAST") return HistoryViewModel(ctx.applicationContext) as T
     }
 }

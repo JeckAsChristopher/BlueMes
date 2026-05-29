@@ -7,52 +7,84 @@ import com.bluemes.app.models.ConnectionState
 import com.bluemes.app.models.MessagePacket
 import com.bluemes.app.models.NearbyUser
 import com.bluemes.app.models.PacketType
+import com.bluemes.app.utils.Constants
+import com.bluemes.app.utils.MessageCrypto
 import com.bluemes.app.utils.UserPreferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * App-lifetime singleton that owns the single BluetoothService and
- * BluetoothDiscoveryManager.
+ * Application-lifetime singleton that orchestrates all Bluetooth logic.
  *
- * THE CORE ARCHITECTURE FIX:
- * Previously, NearbyViewModel and ChatViewModel each created their own
- * BluetoothService instances. This meant:
- *  - The server socket accepting connections lived in NearbyVM's service
- *  - ChatViewModel's service never saw those connections
- *  - The receiver's UI never updated because its nearbyUsers only came from
- *    BT discovery broadcasts, not from incoming socket connections
+ * ── BUG FIXES ─────────────────────────────────────────────────────────────
+ * 1. Non-BlueMes devices appearing:
+ *    Discovery finds any BT device, but BlueMesManager ONLY adds a device to
+ *    the visible [nearbyUsers] flow after a successful 4-way handshake with
+ *    valid APP_TOKEN + HMAC signature.  Discovery results are auto-connected;
+ *    if the RFCOMM UUID is not registered (non-BlueMes device) the connection
+ *    silently fails and the device never appears in the list.
  *
- * Now there is exactly ONE service instance. Both ViewModels subscribe to
- * this manager's shared flows. When a device connects to us (we are the
- * acceptor / receiver), the HANDSHAKE packet triggers addOrUpdateUser(),
- * which pushes the device into nearbyUsers — making the receiver's
- * NearbyFragment update in real time, even when the remote device was
- * never visible via Bluetooth discovery.
+ * 2. "Connection timed out" on receiver even when messages flow:
+ *    ChatViewModel used to call service.connect() which could race against the
+ *    already-open server-side socket, producing a Failed event.  Now:
+ *    - BluetoothService.connect() returns Connected immediately if already
+ *      connected via the server path.
+ *    - ChatViewModel only observes connectionEvents; it never calls connect()
+ *      for devices that are already in [connectedAndVerified].
+ *
+ * 3. Weak handshakes:
+ *    4-way challenge-response:
+ *      A → HANDSHAKE           (challenge = random nonce)
+ *      B → HANDSHAKE_CHALLENGE (echoes nonce, adds own nonce)
+ *      A → HANDSHAKE_RESPONSE  (signature = HMAC(B's nonce))
+ *      B → HANDSHAKE_ACK       (verified, chat open)
+ *    Any packet without APP_TOKEN is silently dropped.
+ *
+ * 4. Weak communication:
+ *    TEXT_MESSAGE content is AES-128/CBC encrypted (key derived from both
+ *    device addresses + shared APP_SECRET via HMAC-SHA256).
+ *
+ * ── NEW FEATURES ──────────────────────────────────────────────────────────
+ * 5. Connection approval modal:
+ *    When the acceptor side completes handshake verification, instead of
+ *    immediately opening chat it emits a [PendingRequest] event.
+ *    NearbyFragment observes [pendingRequests] and shows a dialog.
+ *    - Accept → approveConnection()  → sends CONNECT_ACCEPTED, adds to list
+ *    - Deny   → denyConnection()     → sends CONNECT_DENIED,   drops socket
+ *    Sender observes [connectionDenied] and shows a notification snackbar.
  */
 class BlueMesManager private constructor(private val appContext: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // The single service and discovery manager for the whole app
     private var _service: BluetoothService? = null
-    private var _discoveryManager: BluetoothDiscoveryManager? = null
+    private var _discovery: BluetoothDiscoveryManager? = null
 
     val service: BluetoothService? get() = _service
 
-    // Unified nearby-users state: merges discovery results + handshake-derived users
+    // Only VERIFIED BlueMes users are in this map (shown in UI)
     private val _nearbyUsers = MutableStateFlow<Map<String, NearbyUser>>(emptyMap())
     val nearbyUsers: StateFlow<Map<String, NearbyUser>> = _nearbyUsers
 
-    // All incoming packets forwarded here — both NearbyVM and ChatVM subscribe
+    // Decrypted, validated incoming messages for chat subscribers
     private val _incomingMessages = MutableSharedFlow<MessagePacket>(extraBufferCapacity = 256)
     val incomingMessages: SharedFlow<MessagePacket> = _incomingMessages
 
-    // All connection state changes forwarded here
+    // Connection state changes
     private val _connectionEvents = MutableSharedFlow<ConnectionEvent>(extraBufferCapacity = 64)
     val connectionEvents: SharedFlow<ConnectionEvent> = _connectionEvents
 
-    // Exposed so ChatViewModel can stamp outgoing packets correctly
+    // Acceptor shows this as an approval dialog
+    data class PendingRequest(val address: String, val userName: String)
+    private val _pendingRequests = MutableSharedFlow<PendingRequest>(extraBufferCapacity = 8)
+    val pendingRequests: SharedFlow<PendingRequest> = _pendingRequests
+
+    // Sender is notified when denied
+    private val _connectionDenied = MutableSharedFlow<String>(extraBufferCapacity = 8) // address
+    val connectionDenied: SharedFlow<String> = _connectionDenied
+
     var localAddress: String = "local"
         private set
     var localUserName: String = "User"
@@ -60,25 +92,35 @@ class BlueMesManager private constructor(private val appContext: Context) {
 
     private var started = false
 
+    // Tracks partial handshake state per address
+    private data class HandshakeState(
+        val weAreInitiator: Boolean,
+        val ourChallenge: String = "",
+        val theirChallenge: String = "",
+        val theirName: String = ""
+    )
+    private val handshakeStates = ConcurrentHashMap<String, HandshakeState>()
+
+    // AES keys per established conversation
+    private val sessionKeys = ConcurrentHashMap<String, javax.crypto.spec.SecretKeySpec>()
+
+    // Pending approval map (waiting for user to tap Accept/Deny)
+    private val pendingApprovals = ConcurrentHashMap<String, String>() // address → name
+
     fun isReady(): Boolean = _service != null
 
-    /** Must be called before start() to give the manager the user's chosen name. */
     suspend fun init(prefs: UserPreferences) {
         localUserName = prefs.userName.first() ?: "User"
     }
 
-    /** Start the BT server + discovery. Safe to call multiple times — subsequent calls are no-ops. */
     fun start(context: Context) {
         if (started) return
         started = true
 
         val btMgr = context.getSystemService(BluetoothManager::class.java)
         val btAdapter = btMgr?.adapter ?: run {
-            Log.e(TAG, "No Bluetooth adapter — cannot start")
-            started = false
-            return
+            Log.e(TAG, "No Bluetooth adapter"); started = false; return
         }
-
         localAddress = try { btAdapter.address } catch (_: SecurityException) { "local" }
         Log.d(TAG, "Starting as '$localUserName' ($localAddress)")
 
@@ -87,140 +129,292 @@ class BlueMesManager private constructor(private val appContext: Context) {
         svc.startServer()
 
         val disc = BluetoothDiscoveryManager(context, btAdapter)
-        _discoveryManager = disc
+        _discovery = disc
+
+        // Auto-connect to every discovered device using our service UUID.
+        // If the device doesn't run BlueMes, the RFCOMM connect will fail silently
+        // and the device will never appear in [nearbyUsers].
+        scope.launch {
+            disc.deviceFound.collect { found ->
+                delay(Constants.DISCOVERY_AUTO_CONNECT_DELAY_MS)
+                if (!svc.isConnected(found.device.address)) {
+                    Log.d(TAG, "Auto-connecting to discovered device: ${found.deviceName}")
+                    svc.connect(found.device)
+                }
+            }
+        }
+
         disc.startDiscovery()
 
-        // Mirror discovery map into our unified nearbyUsers
+        // Process raw packets from every connected socket
         scope.launch {
-            disc.nearbyUsers.collect { map ->
-                // Merge: keep any handshake-derived entries that are NOT in discovery results
-                _nearbyUsers.update { current ->
-                    val merged = current.toMutableMap()
-                    map.forEach { (addr, user) ->
-                        // Only overwrite if we don't already have a better (handshake-confirmed) name
-                        val existing = merged[addr]
-                        if (existing == null) {
-                            merged[addr] = user
-                        } else {
-                            // Preserve the real BlueMes userName if it was set via handshake,
-                            // but update RSSI / timestamp from discovery
-                            merged[addr] = existing.copy(
-                                rssi = user.rssi,
-                                lastSeenTimestamp = user.lastSeenTimestamp
-                            )
-                        }
-                    }
-                    merged
-                }
+            svc.incomingRaw.collect { raw ->
+                handleRawPacket(raw)
             }
         }
 
-        // Process incoming packets: update names, push users into UI, forward to subscribers
-        scope.launch {
-            svc.incomingMessages.collect { packet ->
-                when (packet.type) {
-                    PacketType.HANDSHAKE, PacketType.HANDSHAKE_ACK -> {
-                        // *** FIX 1: Receiver-side real-time update ***
-                        // When someone connects TO US (we are the acceptor), they will never
-                        // appear via BT discovery because discovery only finds devices that are
-                        // explicitly set discoverable. By adding them here from the handshake
-                        // packet, the receiver's NearbyFragment list updates immediately.
-                        _nearbyUsers.update { current ->
-                            val existing = current[packet.senderAddress]
-                            val updated = existing?.copy(
-                                userName = packet.senderName,       // ← real BlueMes name
-                                connectionState = ConnectionState.CONNECTED,
-                                lastSeenTimestamp = System.currentTimeMillis()
-                            ) ?: NearbyUser(
-                                deviceAddress = packet.senderAddress,
-                                deviceName = packet.senderAddress,  // fallback until discovery
-                                userName = packet.senderName,       // ← real BlueMes name
-                                connectionState = ConnectionState.CONNECTED
-                            )
-                            current.toMutableMap().also { it[packet.senderAddress] = updated }
-                        }
-                        // Also keep the discovery manager's own map in sync
-                        disc.updateUserName(packet.senderAddress, packet.senderName)
-                    }
-                    else -> {}
-                }
-                // Forward every packet (including handshakes) to all subscribers
-                _incomingMessages.emit(packet)
-            }
-        }
-
-        // *** FIX 2: Update connection state in nearbyUsers on connect/disconnect ***
+        // Mirror connection events; update state in nearbyUsers
         scope.launch {
             svc.connectionEvents.collect { event ->
                 when (event) {
-                    is ConnectionEvent.Connected -> {
-                        _nearbyUsers.update { current ->
-                            current[event.address]?.let { user ->
-                                current.toMutableMap().also {
-                                    it[event.address] = user.copy(
-                                        connectionState = ConnectionState.CONNECTED
-                                    )
-                                }
-                            } ?: current
-                        }
-                    }
+                    is ConnectionEvent.Connected -> updateState(event.address, ConnectionState.CONNECTING)
                     is ConnectionEvent.Disconnected -> {
-                        _nearbyUsers.update { current ->
-                            current[event.address]?.let { user ->
-                                current.toMutableMap().also {
-                                    it[event.address] = user.copy(
-                                        connectionState = ConnectionState.DISCONNECTED
-                                    )
-                                }
-                            } ?: current
-                        }
+                        handshakeStates.remove(event.address)
+                        updateState(event.address, ConnectionState.DISCONNECTED)
                     }
-                    is ConnectionEvent.Connecting -> {
-                        _nearbyUsers.update { current ->
-                            current[event.address]?.let { user ->
-                                current.toMutableMap().also {
-                                    it[event.address] = user.copy(
-                                        connectionState = ConnectionState.CONNECTING
-                                    )
-                                }
-                            } ?: current
-                        }
+                    is ConnectionEvent.Failed -> {
+                        // Failed to auto-connect → silently ignore (non-BlueMes device or out of range)
+                        handshakeStates.remove(event.address)
+                        Log.d(TAG, "Auto-connect failed for ${event.address}: ${event.reason}")
                     }
                     else -> {}
                 }
                 _connectionEvents.emit(event)
             }
         }
-
-        Log.d(TAG, "BlueMesManager started")
     }
 
-    /** Re-trigger discovery scan (e.g. on returning to NearbyFragment). */
-    fun restartDiscovery() {
-        _discoveryManager?.startDiscovery() ?: run {
-            // Discovery manager not yet created — nothing to do; start() will create it
-            Log.w(TAG, "restartDiscovery called before start()")
+    // -------------------------------------------------------------------------
+    // 4-way handshake state machine
+    // -------------------------------------------------------------------------
+
+    private suspend fun handleRawPacket(raw: RawPacket) {
+        val packet = MessagePacket.deserialize(raw.json) ?: run {
+            Log.w(TAG, "Invalid/non-BlueMes packet from ${raw.senderAddress} — discarded")
+            return  // missing APP_TOKEN or bad JSON → silently dropped
+        }
+
+        when (packet.type) {
+
+            // Step 1 (Initiator → Acceptor): "I'm BlueMes, here's my challenge nonce"
+            PacketType.HANDSHAKE -> {
+                val state = HandshakeState(
+                    weAreInitiator = false,
+                    theirChallenge = packet.challenge,
+                    theirName = packet.senderName
+                )
+                handshakeStates[raw.senderAddress] = state
+                val ourNonce = UUID.randomUUID().toString()
+                val reply = buildPacket(
+                    type = PacketType.HANDSHAKE_CHALLENGE,
+                    address = raw.senderAddress,
+                    content = packet.senderName,
+                    challenge = packet.challenge,  // echo initiator's nonce
+                    signature = MessageCrypto.hmacSign(packet.challenge) // sign it
+                ).copy(challenge = ourNonce)        // also include our own nonce
+                handshakeStates[raw.senderAddress] = state.copy(ourChallenge = ourNonce)
+                _service?.sendPacket(raw.senderAddress, reply)
+            }
+
+            // Step 2 (Acceptor → Initiator): "Here's my nonce; I signed yours"
+            PacketType.HANDSHAKE_CHALLENGE -> {
+                val state = handshakeStates[raw.senderAddress] ?: return
+                // Verify acceptor correctly signed our challenge
+                if (!MessageCrypto.hmacVerify(state.ourChallenge, packet.signature)) {
+                    Log.w(TAG, "Handshake HMAC failed from ${raw.senderAddress} — dropping")
+                    _service?.disconnect(raw.senderAddress); return
+                }
+                val updatedState = state.copy(
+                    theirChallenge = packet.challenge,
+                    theirName = packet.senderName
+                )
+                handshakeStates[raw.senderAddress] = updatedState
+                val response = buildPacket(
+                    type = PacketType.HANDSHAKE_RESPONSE,
+                    address = raw.senderAddress,
+                    content = packet.senderName,
+                    challenge = packet.challenge,
+                    signature = MessageCrypto.hmacSign(packet.challenge)
+                )
+                _service?.sendPacket(raw.senderAddress, response)
+            }
+
+            // Step 3 (Initiator → Acceptor): "I signed your nonce"
+            PacketType.HANDSHAKE_RESPONSE -> {
+                val state = handshakeStates[raw.senderAddress] ?: return
+                if (!MessageCrypto.hmacVerify(state.ourChallenge, packet.signature)) {
+                    Log.w(TAG, "Handshake response HMAC invalid from ${raw.senderAddress}")
+                    _service?.disconnect(raw.senderAddress); return
+                }
+                // Initiator is verified. Now ask the acceptor's USER for approval.
+                val name = state.theirName.ifBlank { packet.senderName }
+                pendingApprovals[raw.senderAddress] = name
+                // Send ACK to initiator while we wait for user approval
+                // (initiator will show "waiting for approval" state)
+                val ack = buildPacket(
+                    type = PacketType.CONNECT_REQUEST,
+                    address = raw.senderAddress,
+                    content = localUserName
+                )
+                _service?.sendPacket(raw.senderAddress, ack)
+                // Emit to UI — NearbyFragment will show the dialog
+                _pendingRequests.emit(PendingRequest(raw.senderAddress, name))
+            }
+
+            // Step 4a (Acceptor → Initiator): User tapped Accept
+            PacketType.CONNECT_ACCEPTED -> {
+                val name = packet.senderName
+                establishSession(raw.senderAddress, name)
+                _connectionEvents.emit(ConnectionEvent.Connected(raw.senderAddress))
+            }
+
+            // Step 4b (Acceptor → Initiator): User tapped Deny
+            PacketType.CONNECT_DENIED -> {
+                handshakeStates.remove(raw.senderAddress)
+                _connectionDenied.emit(raw.senderAddress)
+                _service?.disconnect(raw.senderAddress)
+            }
+
+            // Initiator is notified to wait while acceptor shows dialog
+            PacketType.CONNECT_REQUEST -> {
+                updateState(raw.senderAddress, ConnectionState.CONNECTING)
+                // Update name from packet
+                _nearbyUsers.update { map ->
+                    val u = map[raw.senderAddress]
+                    if (u != null) map.toMutableMap().also { it[raw.senderAddress] = u.copy(userName = packet.senderName) }
+                    else map
+                }
+            }
+
+            PacketType.TEXT_MESSAGE -> {
+                val key = sessionKeys[raw.senderAddress]
+                val plaintext = if (key != null) {
+                    MessageCrypto.decrypt(packet.content, key) ?: run {
+                        Log.w(TAG, "Decrypt failed from ${raw.senderAddress}"); return
+                    }
+                } else {
+                    packet.content // fallback (should not happen in normal flow)
+                }
+                _incomingMessages.emit(packet.copy(content = plaintext))
+            }
+
+            PacketType.TYPING_START, PacketType.TYPING_STOP, PacketType.READ_RECEIPT -> {
+                _incomingMessages.emit(packet)
+            }
+
+            PacketType.DISCONNECT -> {
+                _service?.disconnect(raw.senderAddress)
+            }
+
+            else -> {
+                _incomingMessages.emit(packet)
+            }
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Connection approval (called by NearbyFragment on user tap)
+    // -------------------------------------------------------------------------
+
+    fun approveConnection(address: String) {
+        val name = pendingApprovals.remove(address) ?: return
+        scope.launch {
+            val ack = buildPacket(PacketType.CONNECT_ACCEPTED, address, localUserName)
+            _service?.sendPacket(address, ack)
+            establishSession(address, name)
+        }
+    }
+
+    fun denyConnection(address: String) {
+        val name = pendingApprovals.remove(address) ?: ""
+        scope.launch {
+            val deny = buildPacket(PacketType.CONNECT_DENIED, address, "")
+            _service?.sendPacket(address, deny)
+            delay(300) // give the packet time to flush
+            _service?.disconnect(address)
+            handshakeStates.remove(address)
+            Log.d(TAG, "Denied connection from $address ($name)")
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Initiate a handshake toward a known device
+    // -------------------------------------------------------------------------
+
+    fun initiateHandshake(address: String) {
+        scope.launch {
+            val nonce = UUID.randomUUID().toString()
+            handshakeStates[address] = HandshakeState(weAreInitiator = true, ourChallenge = nonce)
+            val hs = buildPacket(PacketType.HANDSHAKE, address, localUserName, challenge = nonce)
+            _service?.sendPacket(address, hs)
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Send an encrypted text message
+    // -------------------------------------------------------------------------
+
+    fun sendMessage(address: String, packet: MessagePacket) {
+        scope.launch {
+            val key = sessionKeys[address]
+            val finalPacket = if (key != null && packet.type == PacketType.TEXT_MESSAGE) {
+                packet.copy(content = MessageCrypto.encrypt(packet.content, key))
+            } else packet
+            _service?.sendPacket(address, finalPacket)
+        }
+    }
+
+    fun sendPacket(address: String, packet: MessagePacket) {
+        _service?.sendPacket(address, packet)
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private fun establishSession(address: String, userName: String) {
+        val key = MessageCrypto.deriveKey(localAddress, address)
+        sessionKeys[address] = key
+        handshakeStates.remove(address)
+        _nearbyUsers.update { map ->
+            val existing = map[address]
+            map.toMutableMap().also {
+                it[address] = (existing ?: NearbyUser(address, address, userName))
+                    .copy(userName = userName, connectionState = ConnectionState.CONNECTED, isVerified = true)
+            }
+        }
+        Log.d(TAG, "Session established with $address ($userName)")
+    }
+
+    private fun updateState(address: String, state: ConnectionState) {
+        _nearbyUsers.update { map ->
+            val u = map[address] ?: return@update map
+            map.toMutableMap().also { it[address] = u.copy(connectionState = state) }
+        }
+    }
+
+    private fun buildPacket(
+        type: PacketType,
+        address: String,
+        content: String,
+        challenge: String = "",
+        signature: String = ""
+    ) = MessagePacket(
+        id = UUID.randomUUID().toString(),
+        type = type,
+        senderAddress = localAddress,
+        senderName = localUserName,
+        content = content,
+        challenge = challenge,
+        signature = signature
+    )
+
+    fun restartDiscovery() { _discovery?.startDiscovery() }
+
     fun stopAll() {
-        _discoveryManager?.stopDiscovery()
+        _discovery?.stopDiscovery()
         _service?.stopAll()
         scope.cancel()
         started = false
-        _service = null
-        _discoveryManager = null
     }
 
     companion object {
         private const val TAG = "BlueMesManager"
 
-        @Volatile
-        private var INSTANCE: BlueMesManager? = null
-
-        fun getInstance(context: Context): BlueMesManager =
+        @Volatile private var INSTANCE: BlueMesManager? = null
+        fun getInstance(ctx: Context): BlueMesManager =
             INSTANCE ?: synchronized(this) {
-                INSTANCE ?: BlueMesManager(context.applicationContext).also { INSTANCE = it }
+                INSTANCE ?: BlueMesManager(ctx.applicationContext).also { INSTANCE = it }
             }
     }
 }

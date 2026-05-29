@@ -2,48 +2,33 @@
 <androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
     android:background="?attr/selectableItemBackground"
-    android:paddingHorizontal="16dp"
-    android:paddingVertical="12dp">
-
-    <TextView
-        android:id="@+id/userName"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
+    android:paddingHorizontal="16dp" android:paddingVertical="12dp">
+    <TextView android:id="@+id/userName"
+        android:layout_width="0dp" android:layout_height="wrap_content"
         android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
         android:textColor="?attr/colorOnSurface"
         app:layout_constraintEnd_toStartOf="@id/timestamp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
-
-    <TextView
-        android:id="@+id/timestamp"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+    <TextView android:id="@+id/timestamp"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
         android:textColor="?attr/colorOnSurfaceVariant"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
-
-    <TextView
-        android:id="@+id/lastMessage"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
+    <TextView android:id="@+id/lastMessage"
+        android:layout_width="0dp" android:layout_height="wrap_content"
         android:layout_marginTop="3dp"
-        android:ellipsize="end"
-        android:maxLines="1"
+        android:ellipsize="end" android:maxLines="1"
         android:textAppearance="@style/TextAppearance.Material3.BodySmall"
         android:textColor="?attr/colorOnSurfaceVariant"
         app:layout_constraintEnd_toStartOf="@id/unreadBadge"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/userName" />
-
-    <TextView
-        android:id="@+id/unreadBadge"
-        android:layout_width="20dp"
-        android:layout_height="20dp"
+    <TextView android:id="@+id/unreadBadge"
+        android:layout_width="20dp" android:layout_height="20dp"
         android:background="@drawable/shape_badge"
         android:gravity="center"
         android:textAppearance="@style/TextAppearance.Material3.LabelSmall"
@@ -52,5 +37,4 @@
         app:layout_constraintBottom_toBottomOf="@id/lastMessage"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="@id/lastMessage" />
-
 </androidx.constraintlayout.widget.ConstraintLayout>
