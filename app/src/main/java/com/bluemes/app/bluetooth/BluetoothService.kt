@@ -126,17 +126,27 @@ class BluetoothService(
 
     private fun launchPeer(socket: BluetoothSocket, isInitiator: Boolean) {
         val address = socket.remoteDevice.address
-        val peer = ConnectedPeer(socket, isInitiator)
+
+        // Get streams before registering the peer so we can bail cleanly on failure
+        val inputStream = try { socket.inputStream } catch (e: IOException) {
+            Log.e(TAG, "No inputStream for $address — closing socket", e)
+            try { socket.close() } catch (_: IOException) {}
+            scope.launch { _connectionEvents.emit(ConnectionEvent.Failed(address, "No input stream")) }
+            return
+        }
+        val outputStream = try { socket.outputStream } catch (e: IOException) {
+            Log.e(TAG, "No outputStream for $address — closing socket", e)
+            try { socket.close() } catch (_: IOException) {}
+            scope.launch { _connectionEvents.emit(ConnectionEvent.Failed(address, "No output stream")) }
+            return
+        }
+
+        val peer = ConnectedPeer(socket, isInitiator, outputStream)
         activeSockets[address] = peer
         updatePeerSet()
 
         scope.launch {
             _connectionEvents.emit(ConnectionEvent.Connected(address))
-
-            val inputStream = try { socket.inputStream } catch (e: IOException) {
-                Log.e(TAG, "No inputStream for $address", e)
-                disconnect(address); return@launch
-            }
 
             val buf = StringBuilder()
             val bytes = ByteArray(Constants.SOCKET_BUFFER_SIZE)
@@ -206,7 +216,7 @@ class BluetoothService(
     private data class ConnectedPeer(
         val socket: BluetoothSocket,
         val isInitiator: Boolean,
-        val outputStream: OutputStream = socket.outputStream
+        val outputStream: OutputStream
     )
 
     companion object { private const val TAG = "BtService" }

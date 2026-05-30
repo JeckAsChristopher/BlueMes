@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.bluemes.app.BlueMesApplication
 import com.bluemes.app.bluetooth.BlueMesManager
 import com.bluemes.app.data.repository.ChatRepository
+import com.bluemes.app.models.ConnectionState
 import com.bluemes.app.models.NearbyUser
 import com.bluemes.app.models.PacketType
 import com.bluemes.app.utils.UserPreferences
@@ -35,15 +36,24 @@ class NearbyViewModel(private val ctx: Context) : ViewModel() {
                 mgr.restartDiscovery()
             }
 
-            // Persist conversations for verified handshakes + incoming messages
+            // Persist conversations only for fully established sessions.
+            // saveIncoming already calls ensureConversation internally.
             launch {
                 mgr.incomingMessages.collect { p ->
                     when (p.type) {
-                        PacketType.HANDSHAKE, PacketType.HANDSHAKE_ACK ->
-                            repo.ensureConversation(p.senderAddress, p.senderName)
                         PacketType.TEXT_MESSAGE -> repo.saveIncoming(p)
                         else -> {}
                     }
+                }
+            }
+
+            // Create/update the conversation record when a session is fully established
+            // (i.e. when the remote peer appears as CONNECTED and verified)
+            launch {
+                mgr.nearbyUsers.collect { users ->
+                    users.values
+                        .filter { it.isVerified && it.connectionState == ConnectionState.CONNECTED }
+                        .forEach { user -> repo.ensureConversation(user.deviceAddress, user.userName) }
                 }
             }
         }

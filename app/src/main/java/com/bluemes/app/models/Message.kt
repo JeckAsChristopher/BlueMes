@@ -34,14 +34,16 @@ data class MessagePacket(
         const val PROTOCOL_VERSION = 2
         private val gson = Gson()
 
-        fun deserialize(json: String): MessagePacket? = try {
-            val p = gson.fromJson(json, MessagePacket::class.java) ?: return null
-            // Hard reject anything that doesn't carry the correct app token
-            if (p.appToken != Constants.APP_TOKEN) return null
-            if (p.protocolVersion != PROTOCOL_VERSION) return null
-            p
-        } catch (_: Exception) {
-            null
+        fun deserialize(json: String): MessagePacket? {
+            return try {
+                val p = gson.fromJson(json, MessagePacket::class.java) ?: return null
+                // Hard reject anything that doesn't carry the correct app token
+                if (p.appToken != Constants.APP_TOKEN) return null
+                if (p.protocolVersion != PROTOCOL_VERSION) return null
+                p
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 }

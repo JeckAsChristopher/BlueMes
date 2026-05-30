@@ -54,16 +54,18 @@ object MessageCrypto {
         return "$ivB64:$ctB64"
     }
 
-    fun decrypt(payload: String, key: SecretKeySpec): String? = try {
-        val parts = payload.split(":")
-        if (parts.size != 2) return null
-        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-        val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
-        val cipher = Cipher.getInstance(AES_ALGO)
-        cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
-        String(cipher.doFinal(ciphertext), Charsets.UTF_8)
-    } catch (e: Exception) {
-        null
+    fun decrypt(payload: String, key: SecretKeySpec): String? {
+        return try {
+            val parts = payload.split(":")
+            if (parts.size != 2) return null
+            val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+            val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
+            val cipher = Cipher.getInstance(AES_ALGO)
+            cipher.init(Cipher.DECRYPT_MODE, key, IvParameterSpec(iv))
+            String(cipher.doFinal(ciphertext), Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // -------------------------------------------------------------------------

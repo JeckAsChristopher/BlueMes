@@ -204,6 +204,16 @@ class BlueMesManager private constructor(private val appContext: Context) {
                 ).copy(challenge = ourNonce)        // also include our own nonce
                 handshakeStates[raw.senderAddress] = state.copy(ourChallenge = ourNonce)
                 _service?.sendPacket(raw.senderAddress, reply)
+
+                // Acceptor-side timeout: if initiator never sends HANDSHAKE_RESPONSE
+                scope.launch {
+                    delay(Constants.HANDSHAKE_TIMEOUT_MS)
+                    if (handshakeStates.containsKey(raw.senderAddress)) {
+                        Log.w(TAG, "Handshake timed out (acceptor) for ${raw.senderAddress} — disconnecting")
+                        handshakeStates.remove(raw.senderAddress)
+                        _service?.disconnect(raw.senderAddress)
+                    }
+                }
             }
 
             // Step 2 (Acceptor → Initiator): "Here's my nonce; I signed yours"
@@ -267,12 +277,29 @@ class BlueMesManager private constructor(private val appContext: Context) {
 
             // Initiator is notified to wait while acceptor shows dialog
             PacketType.CONNECT_REQUEST -> {
-                updateState(raw.senderAddress, ConnectionState.CONNECTING)
-                // Update name from packet
+                // Add to nearbyUsers if not already present so the initiator sees
+                // the device in the list with CONNECTING state while awaiting approval
+                val name = packet.senderName.ifBlank { raw.senderAddress }
                 _nearbyUsers.update { map ->
-                    val u = map[raw.senderAddress]
-                    if (u != null) map.toMutableMap().also { it[raw.senderAddress] = u.copy(userName = packet.senderName) }
-                    else map
+                    val existing = map[raw.senderAddress]
+                    if (existing != null) {
+                        map.toMutableMap().also {
+                            it[raw.senderAddress] = existing.copy(
+                                userName = name,
+                                connectionState = ConnectionState.CONNECTING
+                            )
+                        }
+                    } else {
+                        map.toMutableMap().also {
+                            it[raw.senderAddress] = NearbyUser(
+                                deviceAddress = raw.senderAddress,
+                                deviceName = raw.senderAddress,
+                                userName = name,
+                                connectionState = ConnectionState.CONNECTING,
+                                isVerified = false
+                            )
+                        }
+                    }
                 }
             }
 
@@ -337,6 +364,14 @@ class BlueMesManager private constructor(private val appContext: Context) {
             handshakeStates[address] = HandshakeState(weAreInitiator = true, ourChallenge = nonce)
             val hs = buildPacket(PacketType.HANDSHAKE, address, localUserName, challenge = nonce)
             _service?.sendPacket(address, hs)
+
+            // If the handshake is not completed within the timeout, clean up the orphaned state
+            delay(Constants.HANDSHAKE_TIMEOUT_MS)
+            if (handshakeStates.containsKey(address)) {
+                Log.w(TAG, "Handshake timed out for $address — disconnecting")
+                handshakeStates.remove(address)
+                _service?.disconnect(address)
+            }
         }
     }
 
